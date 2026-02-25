@@ -69,10 +69,30 @@ export const extractTextFromFile = async (filePath, mimetype) => {
 };
 
 // OCR helper function
+// const runOCR = async (filePath) => {
+//   const result = await Tesseract.recognize(filePath, "eng", {
+//     logger: (m) => console.log(m),
+//   });
+
+//   return result.data.text;
+// };
+
 const runOCR = async (filePath) => {
   const result = await Tesseract.recognize(filePath, "eng", {
+    tessedit_pageseg_mode: 1,
     logger: (m) => console.log(m),
   });
 
-  return result.data.text;
+  let text = result.data.text;
+
+  // 🔥 Clean OCR noise
+  text = text
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[^\x20-\x7E]/g, "") // remove weird characters
+    .trim();
+
+  console.log("Cleaned OCR length:", text.length);
+
+  return text;
 };
