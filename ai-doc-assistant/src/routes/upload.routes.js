@@ -9,6 +9,8 @@ import { getOpenAI } from "../services/openai.service.js";
 import { cleanText } from "../services/textCleaner.service.js";
 import logger from "../utils/logger.js";
 import { getSession, addMessage } from "../services/memory.service.js";
+import { getAnthropic } from "../services/anthropic.service.js";
+import { generateLLMStream } from "../services/llm.service.js";
 
 const router = express.Router();
 
@@ -174,137 +176,11 @@ router.post("/", upload.array("files", 10), async (req, res) => {
 
 //-------------------------------------------------------------------------------------------
 
-// router.post("/search", async (req, res) => {
-//   const requestId = Date.now();
-//   try {
-//     const { query, sessionId } = req.body;
-
-//     if (!query || query.trim() === "") {
-//       logger.warn({ requestId }, "Empty search query received");
-//       return res.status(400).json({ error: "Query is required" });
-//     }
-
-//     logger.info({ requestId, query }, "Search started");
-
-//     const index = getPineconeIndex();
-
-//     // Generate embedding
-//     const embedding = await generateEmbedding(query);
-
-//     // Retrieve top 8 relevant chunks
-//     const results = await index.query({
-//       vector: embedding,
-//       topK: 8,
-//       includeMetadata: true,
-//     });
-//     console.log("first results", results.matches);
-//     const matches = results.matches || [];
-
-//     logger.info(
-//       {
-//         requestId,
-//         matchCount: matches.length,
-//         retrievedChunkIds: matches.map((m) => m.id),
-//       },
-//       "Vector search completed",
-//     );
-
-//     // Handle no matches
-//     if (matches.length === 0) {
-//       return res.json({
-//         answer:
-//           "I couldn’t find this information in the uploaded documents.",
-//       });
-//     }
-
-//     // Build structured context with metadata
-//     const contextText = results.matches
-//       .map((match) => {
-//         const fileName = match.metadata.fileName || "Unknown File";
-//         const pageNumber =
-//           match.metadata.pageNumber !== null &&
-//           match.metadata.pageNumber !== undefined
-//             ? `Page ${match.metadata.pageNumber}`
-//             : "Page N/A";
-
-//         const chunkIndex = match.metadata.chunkIndex ?? "N/A";
-
-//         return `Source: ${fileName} - ${pageNumber} - Chunk ${chunkIndex}
-// ${match.metadata.text}`;
-//       })
-//       .join("\n\n---\n\n");
-
-//     // Get chat history
-//     const chatHistory = getSession(sessionId);
-
-//     // Strong structured prompt
-//     const systemPrompt = `
-// You are an AI document assistant with short-term memory.
-
-// You have access to:
-// 1) DOCUMENT CONTEXT from uploaded files
-// 2) CONVERSATION HISTORY
-
-// Rules:
-// - If the question is about the documents, use DOCUMENT CONTEXT.
-// - If the question is about previous conversation, use CONVERSATION HISTORY.
-// - If relevant document context is provided, prioritize it.
-// - If no relevant context is provided, politely say you could not find the answer in the uploaded documents.
-
-// Respond naturally like ChatGPT.
-// Use markdown formatting when helpful.
-// Do NOT return JSON.
-// `;
-
-// const userPrompt = `
-// DOCUMENT CONTEXT:
-// ${contextText}
-
-// USER QUESTION:
-// ${query}
-// `;
-
-//     const openai = getOpenAI();
-
-//     // Calling OpenAI
-//     const gptResponse = await openai.chat.completions.create({
-//       model: "gpt-4o",
-//       messages: [
-//         { role: "system", content: systemPrompt },
-//         ...chatHistory, // previous conversation
-//         { role: "user", content: userPrompt },
-//       ],
-//       temperature: 0,
-//     });
-
-//     console.log(gptResponse.choices[0].message);
-
-//     const assistantReply = gptResponse.choices[0].message.content;
-
-//     // Store conversation in memory
-//     addMessage(sessionId, "user", query);
-//     addMessage(sessionId, "assistant", assistantReply);
-
-//     logger.info({ requestId }, "Search completed successfully");
-
-//     // Return natural response
-//     res.json({
-//       answer: assistantReply,
-//     });
-//   } catch (error) {
-//     logger.error(
-//       { error: error.message, stack: error.stack },
-//       "Search route failed",
-//     );
-//     res.status(500).json({ error: "Search failed" });
-//   }
-// });
-
 router.post("/search", async (req, res) => {
   const requestId = Date.now();
 
   try {
-    const { query, sessionId } = req.body;
+    const { query, sessionId, model = "gpt-4o" } = req.body;
 
     if (!query || query.trim() === "") {
       return res.status(400).json({ error: "Query is required" });
@@ -328,7 +204,6 @@ router.post("/search", async (req, res) => {
 
     const matches = results.matches || [];
 
-    // Early return if no matches
     if (matches.length === 0) {
       return res.json({
         answer: "I couldn’t find this information in the uploaded documents.",
@@ -352,10 +227,8 @@ ${match.metadata.text}`;
       })
       .join("\n\n---\n\n");
 
-    // Get chat history safely
     const chatHistory = getSession(sessionId) || [];
 
-    // System prompt
     const systemPrompt = `
 You are an AI document assistant with short-term memory.
 
@@ -374,7 +247,6 @@ Use markdown formatting when helpful.
 Do NOT return JSON.
 `;
 
-    // User prompt (YOU WERE MISSING THIS)
     const userPrompt = `
 DOCUMENT CONTEXT:
 ${contextText}
@@ -383,45 +255,36 @@ USER QUESTION:
 ${query}
 `;
 
-    const openai = getOpenAI();
-
-    // streaming headers
+    // 🔥 Streaming headers
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Transfer-Encoding", "chunked");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    // Call OpenAI
-    const stream = await openai.chat.completions.create({
-      model: "gpt-4o",
+    let assistantReply = "";
+
+    // 🔥 Unified LLM Router (OpenAI or Claude)
+    const stream = generateLLMStream({
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         ...chatHistory,
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.3,
-      stream: true, // streaming
     });
 
-    let assistantReply = "";
-
-    // STREAM TO FRONTEND
     for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content;
-
-      if (content) {
-        assistantReply += content;
-        res.write(content); // send chunk immediately
-      }
+      assistantReply += chunk;
+      res.write(chunk);
     }
 
     res.end();
 
-    // Store conversation after stream completes
+    // Save memory
     addMessage(sessionId, "user", query);
     addMessage(sessionId, "assistant", assistantReply);
   } catch (error) {
-    console.error(error);
+    console.error("Search Error:", error);
     if (!res.headersSent) {
       res.status(500).json({ error: "Search failed" });
     }
@@ -439,6 +302,31 @@ router.delete("/clear", async (req, res) => {
     console.error("Clear error:", error);
     res.status(500).json({ error: "Failed to clear index" });
   }
+});
+
+// testing claude
+router.get("/test-claude", async (req, res) => {
+  const anthropic = getAnthropic();
+
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Transfer-Encoding", "chunked");
+
+  const stream = await anthropic.messages.stream({
+    model: "claude-3-haiku-20240307",
+    max_tokens: 500,
+    messages: [{ role: "user", content: "Explain RAG in simple terms." }],
+  });
+
+  for await (const chunk of stream) {
+    if (chunk.type === "content_block_delta") {
+      const text = chunk.delta?.text;
+      if (text) {
+        res.write(text);
+      }
+    }
+  }
+
+  res.end();
 });
 
 export default router;
