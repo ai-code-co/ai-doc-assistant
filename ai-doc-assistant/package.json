@@ -13,6 +13,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@langchain/textsplitters": "^1.0.1",
     "@pinecone-database/pinecone": "^7.0.0",
     "cors": "^2.8.6",
