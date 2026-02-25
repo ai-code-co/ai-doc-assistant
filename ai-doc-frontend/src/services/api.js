@@ -1,4 +1,4 @@
-const BASE_URL = "http://localhost:5000";
+const BASE_URL = "https://ai-doc-assistant-n47h.onrender.com";
 
 const getSessionId = () => {
   let sessionId = localStorage.getItem("sessionId");
